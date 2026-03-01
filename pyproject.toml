@@ -1,0 +1,16 @@
+[project]
+name = "comfyui-load-resize-image-with-filename"
+version = "1.0.0"
+description = "ComfyUI custom node: Load & Resize Image with Mask and Filename output"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Slartibart23" }]
+
+[project.urls]
+Homepage = "https://github.com/Slartibart23/ComfyUI-LoadResizeImageWithFilename"
+
+[tool.comfy]
+PublisherId = "Slartibart23"
+DisplayName = "Load & Resize Image + Filename"
+Icon = ""
