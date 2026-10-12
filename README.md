@@ -39,7 +39,7 @@ Search for **"Load & Resize Image + Filename"** in ComfyUI Manager.
 ### Manual
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/Slartibart23/ComfyUI-LoadResizeImageWithFilename
+git clone https://github.com/Slartibart23/ComfyUI-LoadResizeImageWithFilenameV02
 ```
 Restart ComfyUI – no extra dependencies required beyond what ComfyUI already ships.
 
