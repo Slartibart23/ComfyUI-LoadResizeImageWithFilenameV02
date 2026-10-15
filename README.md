@@ -6,10 +6,11 @@ A **ComfyUI custom node** that extends the well-known
 - a **`filename` STRING output** so you can feed the loaded file's name
   directly into downstream nodes (e.g. save nodes, text nodes, prompt builders)
 - a **folder series**: every queued run loads the next image, stops after the last one
-- **cropping**: a rectangle or freehand shape drawn right in the node
+- a **choice of mask**: the standard MaskEditor mask, or a rectangle / freehand
+  shape drawn right in the node
 
-ComfyUI's standard MaskEditor (right-click on the image → *Open in MaskEditor*)
-works exactly as before and is independent of the cropping.
+The node never crops by itself — connect `image` and `mask` to a mask crop node
+such as **Image Crop By Mask** (KJNodes) to cut out the selected area.
 
 Workflows saved with version 1 keep working: their settings are kept and the
 new inputs start with defaults that behave like version 1.
@@ -20,10 +21,10 @@ new inputs start with defaults that behave like version 1.
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `image` | `IMAGE` | Loaded (and optionally cropped / resized) image as a float32 tensor (B, H, W, 3) |
-| `mask` | `MASK` | Alpha channel / MaskEditor mask as a (B, H, W) mask tensor (cropped along with the image) |
-| `width` | `INT` | Final image width (after crop and optional resize) |
-| `height` | `INT` | Final image height (after crop and optional resize) |
+| `image` | `IMAGE` | Loaded (and optionally resized) image as a float32 tensor (B, H, W, 3); with `freehand` filled outside the shape |
+| `mask` | `MASK` | (B, H, W) mask chosen by `mask_source` (1 = selected) |
+| `width` | `INT` | Final image width (after optional resize) |
+| `height` | `INT` | Final image height (after optional resize) |
 | `filename` | `STRING` | File stem without extension (e.g. `my_photo`) |
 | `index` | `INT` | Position of the loaded file in the folder (0 in single image mode) |
 | `file_count` | `INT` | Number of images in the folder (1 in single image mode) |
@@ -42,7 +43,7 @@ new inputs start with defaults that behave like version 1.
 | `source` | `single image` | `single image` = the file picked in `image`, `folder` = the file at `index` in `folder_path` |
 | `folder_path` | — | Folder with the image series (can also be connected as an input) |
 | `index` | `0` | Position in the folder, 0 = first file. *control after generate* is set to `increment` |
-| `crop_mode` | `none` | `none`, `rectangle` or `freehand` (see below) |
+| `mask_source` | `MaskEditor` | `MaskEditor`, `rectangle` or `freehand` (see below) |
 | `fill_color` | `yellow` | Colour outside the shape for `freehand`: yellow / red / green / blue / white / black |
 
 ---
@@ -66,29 +67,40 @@ start again.
 
 ---
 
-## Cropping
+## Mask and cropping
 
-The node shows the image that will be loaded. The crop is applied **before** the
-optional resize, so `width`/`height` refer to the cropped image when resize is off.
+The node always outputs the **whole image** plus a mask. To cut out the selected
+area, connect both to **Image Crop By Mask** (KJNodes) or a similar node:
+
+```
+[Load & Resize Image + Filename] --image--> [Image Crop By Mask] --image--> ...
+                                 --mask---->
+```
+
+`mask_source` decides which mask comes out:
+
+| `mask_source` | `mask` output | `image` output |
+|---------------|---------------|----------------|
+| `MaskEditor` (default) | the mask painted via right-click on the image → *Open in MaskEditor*, as in version 1 | unchanged |
+| `rectangle` | the rectangle drawn in the node | unchanged |
+| `freehand` | the shape painted in the node | outside the shape filled with `fill_color` |
 
 **`rectangle`** — drag on the image to draw a rectangle; drag inside it to move
-it, drag its edges or corners to resize it. Only this part of the image is passed on.
+it, drag its edges or corners to resize it.
 
 **`freehand`** — paint the area to keep right in the node:
 **Brush** paints, **Eraser** removes, **Lasso** draws an outline that is filled
 when you release the mouse; the slider sets the brush size, **Undo** removes the
-last stroke, **Clear** removes everything.
+last stroke, **Clear** removes everything. After Image Crop By Mask you get the
+smallest rectangle around the shape with everything outside the shape in `fill_color`.
 
-The output of `freehand` is the smallest rectangle around the shape (shown as a
-dashed frame with its size); everything inside it but outside the shape is filled
-with `fill_color`. If nothing is drawn, the full image is used.
+The preview shows the rectangle / the shape's bounding box with its size in pixels.
+If nothing is drawn, the mask covers the whole image, so the crop keeps the full
+image instead of failing. With `MaskEditor` an empty mask stays empty, as in
+standard ComfyUI (Image Crop By Mask then reports an error).
 
 In a folder series the rectangle and the freehand shape are applied to every
 image in the same relative position.
-
-**MaskEditor:** the mask you paint in ComfyUI's MaskEditor is not used for
-cropping. It comes out at the `mask` output as usual; when the image is cropped,
-the mask is cropped to the same area so both keep matching.
 
 ---
 
@@ -138,7 +150,7 @@ The `filename` output carries only the **stem** (no path, no extension), e.g.:
 
 - Node logic based on **KJNodes `LoadAndResizeImage`** by
   [kijai](https://github.com/kijai/ComfyUI-KJNodes) — MIT License
-- Filename output, folder series and cropping by **Slartibart23**
+- Filename output, folder series and mask editor by **Slartibart23**
 
 ---
 

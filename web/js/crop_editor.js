@@ -1,8 +1,9 @@
-// Crop editor for "Load & Resize Image + Filename":
-// shows the image that will be loaded and lets you draw a crop rectangle or
-// paint a freehand shape, stored as JSON (relative 0..1 coordinates) in the
-// hidden "crop_data" widget, which the Python node reads. ComfyUI's own
-// MaskEditor (right-click -> Open in MaskEditor) stays independent of this.
+// Mask editor for "Load & Resize Image + Filename":
+// shows the image that will be loaded and lets you draw a rectangle or paint a
+// freehand shape (mask_source rectangle / freehand), stored as JSON (relative
+// 0..1 coordinates) in the hidden "crop_data" widget, which the Python node
+// turns into the mask output. With mask_source "MaskEditor" ComfyUI's own
+// MaskEditor (right-click -> Open in MaskEditor) provides the mask instead.
 
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
@@ -161,7 +162,7 @@ function setupEditor(node) {
   let drag = null;         // current pointer interaction
   let hover = null;        // last pointer position (CSS px) for the brush cursor
 
-  const mode = () => W("crop_mode")?.value || "none";
+  const mode = () => W("mask_source")?.value || "MaskEditor";
 
   function save() {
     const clean = {};
@@ -325,7 +326,7 @@ function setupEditor(node) {
     toolButtons.style.display = m === "freehand" ? "inline-flex" : "none";
     clearBtn.style.display = m === "rectangle" || m === "freehand" ? "" : "none";
     modeHint.textContent = {
-      none: "crop_mode = none: no crop",
+      MaskEditor: "Mask: right-click → Open in MaskEditor",
       rectangle: "Drag to draw, drag edges/corners to adjust",
       freehand: "",
     }[m] ?? "";
@@ -593,24 +594,25 @@ function setupEditor(node) {
 
   // Older saved workflows put other values where the new inputs sit now:
   //  - v1 stored the upload button's value ("image") where "source" is now
-  //  - an early v2 test build had "end_of_folder" before crop_mode
+  //  - an early v2 test build had "end_of_folder" before mask_source
+  //  - test builds called mask_source "crop_mode" (none / mask -> MaskEditor)
   const onConfigure = node.onConfigure;
   node.onConfigure = function (info) {
     const r = onConfigure?.apply(this, arguments);
     const wv = info?.widgets_values || [];
     const set = (name, value) => { const w = W(name); if (w) w.value = value; };
     if (wv[11] === "wrap" || wv[11] === "stop") {
-      set("crop_mode", wv[12]);
+      set("mask_source", wv[12]);
       set("fill_color", wv[13]);
       set("crop_data", wv[14] || "");
     } else if (!W("source")?.options?.values?.includes(W("source")?.value)) {
       for (const [name, value] of [["source", "single image"], ["folder_path", ""], ["index", 0],
-        ["crop_mode", "none"], ["fill_color", "yellow"], ["crop_data", ""]]) set(name, value);
+        ["mask_source", "MaskEditor"], ["fill_color", "yellow"], ["crop_data", ""]]) set(name, value);
       const ctrl = W("index")?.linkedWidgets?.[0];
       if (ctrl) ctrl.value = "increment";
     }
-    // anything still invalid (e.g. a colour from a test build) falls back to the default
-    for (const [name, value] of [["crop_mode", "none"], ["fill_color", "yellow"]]) {
+    // anything still invalid (e.g. "none" from a test build) falls back to the default
+    for (const [name, value] of [["mask_source", "MaskEditor"], ["fill_color", "yellow"]]) {
       const w = W(name);
       if (w && !w.options?.values?.includes(w.value)) w.value = value;
     }

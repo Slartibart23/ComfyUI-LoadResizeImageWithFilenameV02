@@ -4,8 +4,9 @@ Based on KJNodes LoadAndResizeImage by kijai (https://github.com/kijai/ComfyUI-K
 Extended by Slartibart23 with:
   • filename output
   • folder series: every queued run loads the next file, stops at the end
-  • crop: rectangle or freehand shape drawn in the node preview; the area
-    outside a freehand shape is filled with a colour
+  • mask source: the MaskEditor mask, or a rectangle / freehand shape drawn in
+    the node preview (outside a freehand shape the image is filled with a colour);
+    cropping is left to a mask crop node such as KJNodes "Image Crop By Mask"
 
 Compatible with Python 3.9+
 """
@@ -119,9 +120,8 @@ def _drop_overrun_runs(folder: str, count: int) -> int:
 class LoadAndResizeImageWithFilename:
     """
     Loads an image from disk (single file or the next file of a folder series),
-    optionally crops it (rectangle or freehand shape), optionally
-    resizes it, extracts its mask (alpha channel) and outputs the filename
-    (without extension) as a STRING.
+    optionally resizes it, outputs a mask (MaskEditor, or a rectangle / freehand
+    shape drawn in the node) and the filename (without extension) as a STRING.
     """
 
     @classmethod
@@ -203,13 +203,15 @@ class LoadAndResizeImageWithFilename:
                                    "the series stops after the last file",
                     },
                 ),
-                "crop_mode": (
-                    ["none", "rectangle", "freehand"],
+                "mask_source": (
+                    ["MaskEditor", "rectangle", "freehand"],
                     {
-                        "default": "none",
-                        "tooltip": "rectangle: crop to the rectangle drawn in the preview. "
-                                   "freehand: crop to the shape painted in the preview, everything outside "
-                                   "it is filled with fill_color. The MaskEditor mask is only cropped along",
+                        "default": "MaskEditor",
+                        "tooltip": "Which mask comes out at 'mask' (crop with e.g. Image Crop By Mask). "
+                                   "MaskEditor: the mask painted via right-click -> Open in MaskEditor. "
+                                   "rectangle: the rectangle drawn in the preview. "
+                                   "freehand: the shape painted in the preview; outside it the image "
+                                   "is filled with fill_color",
                     },
                 ),
                 "fill_color": (
@@ -223,7 +225,7 @@ class LoadAndResizeImageWithFilename:
                     "STRING",
                     {
                         "default": "",
-                        "tooltip": "Written by the crop editor in the node preview",
+                        "tooltip": "Written by the editor in the node preview",
                     },
                 ),
             }
@@ -290,7 +292,7 @@ class LoadAndResizeImageWithFilename:
         return t, target_w, target_h
 
     # ------------------------------------------------------------------
-    # crop helpers
+    # mask helpers (rectangle / freehand from the node preview)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -347,37 +349,39 @@ class LoadAndResizeImageWithFilename:
                 draw.ellipse((px - r, py - r, px + r, py + r), fill=value)
         return np.array(canvas) > 127
 
-    def _apply_crop(self, image: torch.Tensor, mask: torch.Tensor, crop_mode: str, crop_data: str, fill_color: str):
+    def _apply_mask_source(self, image: torch.Tensor, mask: torch.Tensor, mask_source: str,
+                           crop_data: str, fill_color: str):
         """
-        Crop image (B, H, W, 3) according to crop_mode. The mask (alpha / MaskEditor)
-        is only cropped along so it keeps matching the image; its content is untouched.
+        Pick the mask for the 'mask' output. The image keeps its size; cropping is
+        left to a mask crop node. Nothing drawn -> full mask, so that crop keeps the
+        whole image instead of failing on an empty mask.
         """
-        if crop_mode not in ("rectangle", "freehand"):
-            return image, mask
-        _, img_h, img_w, _ = image.shape
+        if mask_source not in ("rectangle", "freehand"):
+            return image, mask  # MaskEditor: alpha channel as in v1
+        frames, img_h, img_w, _ = image.shape
         data = self._parse_crop_data(crop_data)
+        full = torch.ones((frames, img_h, img_w), dtype=mask.dtype, device=mask.device)
 
-        if crop_mode == "rectangle":
+        if mask_source == "rectangle":
             box = self._rect_to_pixels(data.get("rect"), img_w, img_h)
             if box is None:
-                print(f"[{NODE_ID}] crop_mode=rectangle but no rectangle drawn, using full image")
-                return image, mask
+                print(f"[{NODE_ID}] mask_source=rectangle but no rectangle drawn, mask covers the full image")
+                return image, full
             x0, y0, x1, y1 = box
-            return image[:, y0:y1, x0:x1, :], mask[:, y0:y1, x0:x1]
+            out_mask = torch.zeros_like(full)
+            out_mask[:, y0:y1, x0:x1] = 1.0
+            return image, out_mask
 
-        # freehand: crop to the bounding box of the shape, fill everything outside it
+        # freehand: mask = the shape, outside it the image gets the fill colour
         shape = self._render_shape(data.get("strokes"), img_w, img_h)
-        ys, xs = np.nonzero(shape)
-        if len(xs) == 0:
-            print(f"[{NODE_ID}] crop_mode=freehand but nothing painted, using full image")
-            return image, mask
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        shape_t = torch.from_numpy(shape[y0:y1, x0:x1]).to(image.device)
-        out = image[:, y0:y1, x0:x1, :].clone()
+        if not shape.any():
+            print(f"[{NODE_ID}] mask_source=freehand but nothing painted, mask covers the full image")
+            return image, full
+        shape_t = torch.from_numpy(shape).to(image.device)
+        out = image.clone()
         color = torch.tensor(FILL_COLORS.get(fill_color, FILL_COLORS["yellow"]), dtype=out.dtype, device=out.device)
         out[:, ~shape_t] = color
-        return out, mask[:, y0:y1, x0:x1]
+        return out, shape_t.to(mask.dtype).unsqueeze(0).repeat(frames, 1, 1)
 
     # ------------------------------------------------------------------
     # main
@@ -395,7 +399,7 @@ class LoadAndResizeImageWithFilename:
         source: str = "single image",
         folder_path: str = "",
         index: int = 0,
-        crop_mode: str = "none",
+        mask_source: str = "MaskEditor",
         fill_color: str = "yellow",
         crop_data: str = "",
     ):
@@ -432,8 +436,8 @@ class LoadAndResizeImageWithFilename:
         out_image = torch.cat(output_images, dim=0)
         out_mask = torch.cat(output_masks, dim=0)
 
-        # ---- optional crop (before resize) -----------------------------
-        out_image, out_mask = self._apply_crop(out_image, out_mask, crop_mode, crop_data, fill_color)
+        # ---- mask: MaskEditor, rectangle or freehand shape ------------
+        out_image, out_mask = self._apply_mask_source(out_image, out_mask, mask_source, crop_data, fill_color)
 
         # ---- optional resize ------------------------------------------
         if resize:
