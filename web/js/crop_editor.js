@@ -1,8 +1,8 @@
 // Crop editor for "Load & Resize Image + Filename":
 // shows the image that will be loaded and lets you draw a crop rectangle or
 // paint a freehand shape, stored as JSON (relative 0..1 coordinates) in the
-// hidden "crop_data" widget, which the Python node reads. In crop_mode "mask"
-// it shows the mask painted in ComfyUI's MaskEditor instead.
+// hidden "crop_data" widget, which the Python node reads. ComfyUI's own
+// MaskEditor (right-click -> Open in MaskEditor) stays independent of this.
 
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
@@ -34,7 +34,7 @@ function el(tag, css, text) {
   return e;
 }
 
-// "sub/name.png [input]" -> /view URL; channel "rgb" = without transparency, "a" = transparency only
+// "sub/name.png [input]" -> /view URL; channel "rgb" = without transparency
 function viewUrl(value, channel) {
   let name = value, type = "input";
   const m = /^(.*) \[(input|output|temp)\]$/.exec(value);
@@ -155,9 +155,8 @@ function setupEditor(node) {
   // -------------------------------------------------------------- state
   let data = parseData(dataWidget.value);
   let img = null;          // HTMLImageElement of the image that will be loaded
-  let editorMask = null;   // MaskEditor transparency of the 'image' file (crop_mode mask)
-  let imgKey = "", maskKey = "";
-  let loadToken = 0, maskToken = 0;
+  let imgKey = "";
+  let loadToken = 0;
   let message = "";        // shown instead of the image
   let drag = null;         // current pointer interaction
   let hover = null;        // last pointer position (CSS px) for the brush cursor
@@ -239,25 +238,6 @@ function setupEditor(node) {
     draw();
   }
 
-  // the MaskEditor stores its mask as transparency of the file picked in 'image'
-  async function refreshMask() {
-    const value = W("image")?.value;
-    const key = mode() === "mask" && value && !isJpeg(value) ? value : "";
-    if (key === maskKey) return;
-    maskKey = key;
-    const token = ++maskToken;
-    editorMask = null;
-    if (key) {
-      try {
-        const { im } = await fetchImage(viewUrl(value, "a"));
-        if (token === maskToken) editorMask = im;
-      } catch {
-        // no mask to show; the node then uses the full image
-      }
-    }
-    draw();
-  }
-
   // ---------------------------------------------------------- geometry
   // where the image sits inside the canvas (CSS px)
   function imageBox() {
@@ -326,15 +306,6 @@ function setupEditor(node) {
     ctx.globalCompositeOperation = "source-over";
   }
 
-  // MaskEditor mask: painted = transparent in the alpha image -> opaque here
-  function paintEditorMask(ctx, box) {
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(box.x, box.y, box.w, box.h);
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.drawImage(editorMask, box.x, box.y, box.w, box.h);
-    ctx.globalCompositeOperation = "source-over";
-  }
-
   const shapeCanvas = document.createElement("canvas");
   const tintCanvas = document.createElement("canvas");
 
@@ -357,8 +328,6 @@ function setupEditor(node) {
       none: "crop_mode = none: no crop",
       rectangle: "Drag to draw, drag edges/corners to adjust",
       freehand: "",
-      mask: editorMask ? "Mask from right-click → Open in MaskEditor"
-        : "Paint a mask: right-click → Open in MaskEditor",
     }[m] ?? "";
     for (const [k, b] of Object.entries(tools)) b.style.background = k === tool ? "#2a6db0" : "#333";
 
@@ -392,13 +361,11 @@ function setupEditor(node) {
       label(ctx, `${pw}×${ph}`, hs.L + 4, hs.T + 4);
     }
 
-    const shaped = m === "freehand" || (m === "mask" && editorMask);
-    if (shaped) {
+    if (m === "freehand") {
       for (const c of [shapeCanvas, tintCanvas]) { c.width = canvas.width; c.height = canvas.height; }
       const sctx = shapeCanvas.getContext("2d");
       sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (m === "mask") paintEditorMask(sctx, box);
-      else paintStrokes(sctx, box, drag?.stroke ? [...data.strokes, drag.stroke] : data.strokes);
+      paintStrokes(sctx, box, drag?.stroke ? [...data.strokes, drag.stroke] : data.strokes);
 
       // everything outside the shape gets the fill colour
       const fill = FILL_CSS[W("fill_color")?.value] || FILL_CSS.yellow;
@@ -617,7 +584,6 @@ function setupEditor(node) {
     hideDefaultPreview();
     const changed = syncFromWidget();
     refreshImage();
-    refreshMask();
     const look = `${mode()}|${W("fill_color")?.value}`;
     if (changed || look !== lastLook) {
       lastLook = look;

@@ -6,8 +6,10 @@ A **ComfyUI custom node** that extends the well-known
 - a **`filename` STRING output** so you can feed the loaded file's name
   directly into downstream nodes (e.g. save nodes, text nodes, prompt builders)
 - a **folder series**: every queued run loads the next image, stops after the last one
-- **cropping**: a rectangle or freehand shape drawn in the node, or the mask
-  painted in ComfyUI's MaskEditor (right-click → *Open in MaskEditor*)
+- **cropping**: a rectangle or freehand shape drawn right in the node
+
+ComfyUI's standard MaskEditor (right-click on the image → *Open in MaskEditor*)
+works exactly as before and is independent of the cropping.
 
 Workflows saved with version 1 keep working: their settings are kept and the
 new inputs start with defaults that behave like version 1.
@@ -19,7 +21,7 @@ new inputs start with defaults that behave like version 1.
 | Output | Type | Description |
 |--------|------|-------------|
 | `image` | `IMAGE` | Loaded (and optionally cropped / resized) image as a float32 tensor (B, H, W, 3) |
-| `mask` | `MASK` | Alpha channel as a (B, H, W) mask tensor; with `freehand` / `mask` cropping the shape (1 = selected) |
+| `mask` | `MASK` | Alpha channel / MaskEditor mask as a (B, H, W) mask tensor (cropped along with the image) |
 | `width` | `INT` | Final image width (after crop and optional resize) |
 | `height` | `INT` | Final image height (after crop and optional resize) |
 | `filename` | `STRING` | File stem without extension (e.g. `my_photo`) |
@@ -40,8 +42,8 @@ new inputs start with defaults that behave like version 1.
 | `source` | `single image` | `single image` = the file picked in `image`, `folder` = the file at `index` in `folder_path` |
 | `folder_path` | — | Folder with the image series (can also be connected as an input) |
 | `index` | `0` | Position in the folder, 0 = first file. *control after generate* is set to `increment` |
-| `crop_mode` | `none` | `none`, `rectangle`, `freehand` or `mask` (see below) |
-| `fill_color` | `yellow` | Colour outside the shape for `freehand` / `mask`: yellow / red / green / blue / white / black |
+| `crop_mode` | `none` | `none`, `rectangle` or `freehand` (see below) |
+| `fill_color` | `yellow` | Colour outside the shape for `freehand`: yellow / red / green / blue / white / black |
 
 ---
 
@@ -77,17 +79,16 @@ it, drag its edges or corners to resize it. Only this part of the image is passe
 when you release the mouse; the slider sets the brush size, **Undo** removes the
 last stroke, **Clear** removes everything.
 
-**`mask`** — paint the area to keep in ComfyUI's own MaskEditor
-(right-click on the node → *Open in MaskEditor*), then save. The node shows the
-mask in its preview.
+The output of `freehand` is the smallest rectangle around the shape (shown as a
+dashed frame with its size); everything inside it but outside the shape is filled
+with `fill_color`. If nothing is drawn, the full image is used.
 
-With `freehand` and `mask` the output is the smallest rectangle around the shape
-(shown as a dashed frame with its size); everything inside it but outside the
-shape is filled with `fill_color`. If nothing is drawn, the full image is used.
+In a folder series the rectangle and the freehand shape are applied to every
+image in the same relative position.
 
-In a folder series the rectangle, the freehand shape and the MaskEditor mask
-(painted on the file picked in `image`) are applied to every image in the same
-relative position.
+**MaskEditor:** the mask you paint in ComfyUI's MaskEditor is not used for
+cropping. It comes out at the `mask` output as usual; when the image is cropped,
+the mask is cropped to the same area so both keep matching.
 
 ---
 

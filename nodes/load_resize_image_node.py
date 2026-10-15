@@ -4,8 +4,8 @@ Based on KJNodes LoadAndResizeImage by kijai (https://github.com/kijai/ComfyUI-K
 Extended by Slartibart23 with:
   • filename output
   • folder series: every queued run loads the next file, stops at the end
-  • crop: rectangle or freehand shape drawn in the node preview, or the mask
-    painted in ComfyUI's MaskEditor; the area outside a shape is filled with a colour
+  • crop: rectangle or freehand shape drawn in the node preview; the area
+    outside a freehand shape is filled with a colour
 
 Compatible with Python 3.9+
 """
@@ -119,7 +119,7 @@ def _drop_overrun_runs(folder: str, count: int) -> int:
 class LoadAndResizeImageWithFilename:
     """
     Loads an image from disk (single file or the next file of a folder series),
-    optionally crops it (rectangle, freehand shape or MaskEditor mask), optionally
+    optionally crops it (rectangle or freehand shape), optionally
     resizes it, extracts its mask (alpha channel) and outputs the filename
     (without extension) as a STRING.
     """
@@ -204,20 +204,19 @@ class LoadAndResizeImageWithFilename:
                     },
                 ),
                 "crop_mode": (
-                    ["none", "rectangle", "freehand", "mask"],
+                    ["none", "rectangle", "freehand"],
                     {
                         "default": "none",
                         "tooltip": "rectangle: crop to the rectangle drawn in the preview. "
-                                   "freehand: crop to the shape painted in the preview. "
-                                   "mask: crop to the mask painted in the MaskEditor (right-click -> Open in MaskEditor). "
-                                   "With freehand and mask everything outside the shape is filled with fill_color",
+                                   "freehand: crop to the shape painted in the preview, everything outside "
+                                   "it is filled with fill_color. The MaskEditor mask is only cropped along",
                     },
                 ),
                 "fill_color": (
                     list(FILL_COLORS.keys()),
                     {
                         "default": "yellow",
-                        "tooltip": "Colour for the area outside the freehand shape / mask",
+                        "tooltip": "Colour for the area outside the freehand shape",
                     },
                 ),
                 "crop_data": (
@@ -348,64 +347,37 @@ class LoadAndResizeImageWithFilename:
                 draw.ellipse((px - r, py - r, px + r, py + r), fill=value)
         return np.array(canvas) > 127
 
-    @staticmethod
-    def _editor_mask(image: str, img_w: int, img_h: int) -> np.ndarray:
+    def _apply_crop(self, image: torch.Tensor, mask: torch.Tensor, crop_mode: str, crop_data: str, fill_color: str):
         """
-        The mask painted in the MaskEditor for the file picked in 'image'
-        (stored as transparency), scaled to img_w x img_h. True = painted.
+        Crop image (B, H, W, 3) according to crop_mode. The mask (alpha / MaskEditor)
+        is only cropped along so it keeps matching the image; its content is untouched.
         """
-        path = folder_paths.get_annotated_filepath(image)
-        pil = ImageOps.exif_transpose(Image.open(path))
-        if "A" not in pil.getbands():
-            return np.zeros((img_h, img_w), dtype=bool)
-        alpha = pil.getchannel("A")
-        if alpha.size != (img_w, img_h):
-            alpha = alpha.resize((img_w, img_h), Image.BILINEAR)
-        return np.array(alpha) < 128
-
-    @staticmethod
-    def _crop_to_shape(image: torch.Tensor, mask: torch.Tensor, shape: np.ndarray, fill_color: str):
-        """Crop to the bounding box of ``shape`` and fill everything outside the shape."""
-        ys, xs = np.nonzero(shape)
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        shape_t = torch.from_numpy(shape[y0:y1, x0:x1]).to(image.device)
-        out = image[:, y0:y1, x0:x1, :].clone()
-        color = torch.tensor(FILL_COLORS.get(fill_color, FILL_COLORS["yellow"]), dtype=out.dtype, device=out.device)
-        out[:, ~shape_t] = color
-        # mask = the shape (1 = selected), one copy per frame
-        out_mask = shape_t.to(mask.dtype).unsqueeze(0).repeat(image.shape[0], 1, 1)
-        return out, out_mask
-
-    def _apply_crop(self, image: torch.Tensor, mask: torch.Tensor, crop_mode: str, crop_data: str,
-                    fill_color: str, source: str, image_name: str):
-        """Crop image (B, H, W, 3) and mask (B, H, W) according to crop_mode."""
-        if crop_mode == "none":
+        if crop_mode not in ("rectangle", "freehand"):
             return image, mask
         _, img_h, img_w, _ = image.shape
+        data = self._parse_crop_data(crop_data)
 
         if crop_mode == "rectangle":
-            box = self._rect_to_pixels(self._parse_crop_data(crop_data).get("rect"), img_w, img_h)
+            box = self._rect_to_pixels(data.get("rect"), img_w, img_h)
             if box is None:
                 print(f"[{NODE_ID}] crop_mode=rectangle but no rectangle drawn, using full image")
                 return image, mask
             x0, y0, x1, y1 = box
             return image[:, y0:y1, x0:x1, :], mask[:, y0:y1, x0:x1]
 
-        if crop_mode == "mask":
-            if source == "folder":
-                shape = self._editor_mask(image_name, img_w, img_h)
-            else:
-                shape = mask[0].cpu().numpy() > 0.5
-            what = "no mask painted in the MaskEditor"
-        else:
-            shape = self._render_shape(self._parse_crop_data(crop_data).get("strokes"), img_w, img_h)
-            what = "nothing painted"
-
-        if not shape.any():
-            print(f"[{NODE_ID}] crop_mode={crop_mode} but {what}, using full image")
+        # freehand: crop to the bounding box of the shape, fill everything outside it
+        shape = self._render_shape(data.get("strokes"), img_w, img_h)
+        ys, xs = np.nonzero(shape)
+        if len(xs) == 0:
+            print(f"[{NODE_ID}] crop_mode=freehand but nothing painted, using full image")
             return image, mask
-        return self._crop_to_shape(image, mask, shape, fill_color)
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        shape_t = torch.from_numpy(shape[y0:y1, x0:x1]).to(image.device)
+        out = image[:, y0:y1, x0:x1, :].clone()
+        color = torch.tensor(FILL_COLORS.get(fill_color, FILL_COLORS["yellow"]), dtype=out.dtype, device=out.device)
+        out[:, ~shape_t] = color
+        return out, mask[:, y0:y1, x0:x1]
 
     # ------------------------------------------------------------------
     # main
@@ -461,7 +433,7 @@ class LoadAndResizeImageWithFilename:
         out_mask = torch.cat(output_masks, dim=0)
 
         # ---- optional crop (before resize) -----------------------------
-        out_image, out_mask = self._apply_crop(out_image, out_mask, crop_mode, crop_data, fill_color, source, image)
+        out_image, out_mask = self._apply_crop(out_image, out_mask, crop_mode, crop_data, fill_color)
 
         # ---- optional resize ------------------------------------------
         if resize:
@@ -490,16 +462,13 @@ class LoadAndResizeImageWithFilename:
         return m.hexdigest()
 
     @classmethod
-    def IS_CHANGED(cls, image, source="single image", folder_path="", index=0, crop_mode="none", **kwargs):
+    def IS_CHANGED(cls, image, source="single image", folder_path="", index=0, **kwargs):
         try:
             if source != "folder":
                 return cls._file_hash(folder_paths.get_annotated_filepath(image))
             image_path, count = resolve_folder_image(folder_path, index)
             stat = os.stat(image_path)
-            key = f"{image_path}|{count}|{stat.st_mtime_ns}|{stat.st_size}"
-            if crop_mode == "mask":
-                key += "|" + cls._file_hash(folder_paths.get_annotated_filepath(image))
-            return key
+            return f"{image_path}|{count}|{stat.st_mtime_ns}|{stat.st_size}"
         except Exception:
             # let load_image report the actual error
             return float("nan")

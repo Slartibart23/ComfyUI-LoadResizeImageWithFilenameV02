@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-load-resize-image-with-filename"
 version = "2.0.0"
-description = "ComfyUI custom node: Load & Resize Image with Mask and Filename output, folder series and cropping (rectangle / freehand / MaskEditor mask)"
+description = "ComfyUI custom node: Load & Resize Image with Mask and Filename output, folder series and cropping (rectangle / freehand)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
