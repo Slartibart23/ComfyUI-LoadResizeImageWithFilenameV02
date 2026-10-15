@@ -1,15 +1,16 @@
-// Crop editor for "Load & Resize Image + Filename":
-// shows the image that will be loaded and lets you draw a crop rectangle
-// or paint a freehand shape. The result is stored as JSON (relative 0..1
-// coordinates) in the hidden "crop_data" widget, which the Python node reads.
+// Crop editor for "Load & Resize Image + Filename (Series/Crop)":
+// shows the image that will be loaded and lets you draw a crop rectangle or
+// paint a freehand shape, stored as JSON (relative 0..1 coordinates) in the
+// hidden "crop_data" widget, which the Python node reads. In crop_mode "mask"
+// it shows the mask painted in ComfyUI's MaskEditor instead.
 
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
 
-const NODE_NAME = "LoadAndResizeImageWithFilename";
+const NODE_NAME = "LoadAndResizeImageWithFilenameSeriesCrop";
 const HANDLE = 7; // handle half-size in CSS px
 const FILL_CSS = {
-  red: "#ff0000", green: "#00ff00", yellow: "#ffff00",
+  yellow: "#ffff00", red: "#ff0000", green: "#00ff00",
   blue: "#0000ff", white: "#ffffff", black: "#000000",
 };
 
@@ -33,15 +34,37 @@ function el(tag, css, text) {
   return e;
 }
 
-// "sub/name.png [input]" -> /view URL
-function viewUrl(value) {
+// "sub/name.png [input]" -> /view URL; channel "rgb" = without transparency, "a" = transparency only
+function viewUrl(value, channel) {
   let name = value, type = "input";
   const m = /^(.*) \[(input|output|temp)\]$/.exec(value);
   if (m) { name = m[1]; type = m[2]; }
   const slash = name.lastIndexOf("/");
   const subfolder = slash >= 0 ? name.slice(0, slash) : "";
   const filename = slash >= 0 ? name.slice(slash + 1) : name;
-  return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=${type}&subfolder=${encodeURIComponent(subfolder)}`);
+  const ch = channel ? `&channel=${channel}` : "";
+  return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=${type}&subfolder=${encodeURIComponent(subfolder)}${ch}`);
+}
+
+// JPEGs carry no transparency but may carry EXIF rotation, which /view?channel drops
+const isJpeg = (value) => /\.jpe?g( \[\w+\])?$/i.test(value || "");
+
+async function fetchImage(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    let err = `HTTP ${res.status}`;
+    try { err = (await res.json()).error || err; } catch {}
+    throw new Error(err);
+  }
+  const blob = await res.blob();
+  const im = new Image();
+  im.src = URL.createObjectURL(blob);
+  try {
+    await im.decode();
+  } finally {
+    URL.revokeObjectURL(im.src);
+  }
+  return { im, headers: res.headers };
 }
 
 app.registerExtension({
@@ -115,9 +138,6 @@ function setupEditor(node) {
   function setTool(t) {
     tool = t;
     node.properties.lrifTool = t;
-    for (const [k, b] of Object.entries(tools)) {
-      b.style.background = k === t ? "#2a6db0" : "#333";
-    }
     draw();
   }
 
@@ -134,9 +154,10 @@ function setupEditor(node) {
 
   // -------------------------------------------------------------- state
   let data = parseData(dataWidget.value);
-  let img = null;          // HTMLImageElement of the current image
-  let imgKey = "";         // what is loaded right now
-  let loadToken = 0;
+  let img = null;          // HTMLImageElement of the image that will be loaded
+  let editorMask = null;   // MaskEditor transparency of the 'image' file (crop_mode mask)
+  let imgKey = "", maskKey = "";
+  let loadToken = 0, maskToken = 0;
   let message = "";        // shown instead of the image
   let drag = null;         // current pointer interaction
   let hover = null;        // last pointer position (CSS px) for the brush cursor
@@ -148,6 +169,7 @@ function setupEditor(node) {
     if (data.rect) clean.rect = data.rect.map((v) => Math.round(v * 1e5) / 1e5);
     if (data.strokes.length) clean.strokes = data.strokes;
     dataWidget.value = Object.keys(clean).length ? JSON.stringify(clean) : "";
+    lastDataValue = dataWidget.value;
     draw();
     node.setDirtyCanvas?.(true, true);
   }
@@ -170,19 +192,17 @@ function setupEditor(node) {
   }
 
   function wantedSource() {
-    const source = W("source")?.value;
-    if (source === "folder") {
+    if (W("source")?.value === "folder") {
       if (folderLinked()) return { key: "linked", message: "No preview: folder_path comes from a link" };
       const folder = (W("folder_path")?.value || "").trim();
       if (!folder) return { key: "nofolder", message: "Enter a folder_path" };
       const index = W("index")?.value ?? 0;
-      const end = W("end_of_folder")?.value || "wrap";
-      const url = api.apiURL(`/lrif/folder_image?folder=${encodeURIComponent(folder)}&index=${index}&end=${end}`);
-      return { key: `folder|${folder}|${index}|${end}`, url, folder: true };
+      const url = api.apiURL(`/lrif/folder_image?folder=${encodeURIComponent(folder)}&index=${index}`);
+      return { key: `folder|${folder}|${index}`, url, folder: true };
     }
     const value = W("image")?.value;
     if (!value) return { key: "none", message: "No image selected" };
-    return { key: `file|${value}`, url: viewUrl(value), label: value };
+    return { key: `file|${value}`, url: viewUrl(value, isJpeg(value) ? null : "rgb"), label: value };
   }
 
   async function refreshImage(force = false) {
@@ -198,24 +218,14 @@ function setupEditor(node) {
       return;
     }
     try {
-      const res = await fetch(want.url, { cache: "no-store" });
-      if (!res.ok) {
-        let err = `HTTP ${res.status}`;
-        try { err = (await res.json()).error || err; } catch {}
-        throw new Error(err);
-      }
-      const blob = await res.blob();
-      const im = new Image();
-      im.src = URL.createObjectURL(blob);
-      await im.decode();
+      const { im, headers } = await fetchImage(want.url);
       if (token !== loadToken) return;
-      if (img?.src?.startsWith("blob:")) URL.revokeObjectURL(img.src);
       img = im;
       message = "";
       if (want.folder) {
-        const name = decodeURIComponent(res.headers.get("X-LRIF-Filename") || "");
-        const idx = Number(res.headers.get("X-LRIF-Index"));
-        const count = Number(res.headers.get("X-LRIF-Count"));
+        const name = decodeURIComponent(headers.get("X-LRIF-Filename") || "");
+        const idx = Number(headers.get("X-LRIF-Index"));
+        const count = Number(headers.get("X-LRIF-Count"));
         info.textContent = `Next: ${name}  (${idx + 1} / ${count})  ${im.naturalWidth}×${im.naturalHeight}`;
       } else {
         info.textContent = `${want.label}  ${im.naturalWidth}×${im.naturalHeight}`;
@@ -225,6 +235,25 @@ function setupEditor(node) {
       img = null;
       message = String(e.message || e);
       info.textContent = "";
+    }
+    draw();
+  }
+
+  // the MaskEditor stores its mask as transparency of the file picked in 'image'
+  async function refreshMask() {
+    const value = W("image")?.value;
+    const key = mode() === "mask" && value && !isJpeg(value) ? value : "";
+    if (key === maskKey) return;
+    maskKey = key;
+    const token = ++maskToken;
+    editorMask = null;
+    if (key) {
+      try {
+        const { im } = await fetchImage(viewUrl(value, "a"));
+        if (token === maskToken) editorMask = im;
+      } catch {
+        // no mask to show; the node then uses the full image
+      }
     }
     draw();
   }
@@ -269,7 +298,7 @@ function setupEditor(node) {
 
   // ------------------------------------------------------------ drawing
   // paints the freehand strokes into ctx, scaled to box (shape = opaque)
-  function paintShape(ctx, box, strokes) {
+  function paintStrokes(ctx, box, strokes) {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const st of strokes) {
@@ -297,6 +326,15 @@ function setupEditor(node) {
     ctx.globalCompositeOperation = "source-over";
   }
 
+  // MaskEditor mask: painted = transparent in the alpha image -> opaque here
+  function paintEditorMask(ctx, box) {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(editorMask, box.x, box.y, box.w, box.h);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
   const shapeCanvas = document.createElement("canvas");
   const tintCanvas = document.createElement("canvas");
 
@@ -314,9 +352,14 @@ function setupEditor(node) {
 
     const m = mode();
     toolButtons.style.display = m === "freehand" ? "inline-flex" : "none";
-    clearBtn.style.display = m === "none" ? "none" : "";
-    modeHint.textContent = m === "none" ? "crop_mode = none: no crop"
-      : m === "rectangle" ? "Drag to draw, drag edges/corners to adjust" : "";
+    clearBtn.style.display = m === "rectangle" || m === "freehand" ? "" : "none";
+    modeHint.textContent = {
+      none: "crop_mode = none: no crop",
+      rectangle: "Drag to draw, drag edges/corners to adjust",
+      freehand: "",
+      mask: editorMask ? "Mask from right-click → Open in MaskEditor"
+        : "Paint a mask: right-click → Open in MaskEditor",
+    }[m] ?? "";
     for (const [k, b] of Object.entries(tools)) b.style.background = k === tool ? "#2a6db0" : "#333";
 
     const box = imageBox();
@@ -349,15 +392,16 @@ function setupEditor(node) {
       label(ctx, `${pw}×${ph}`, hs.L + 4, hs.T + 4);
     }
 
-    if (m === "freehand") {
-      const strokes = drag?.stroke ? [...data.strokes, drag.stroke] : data.strokes;
+    const shaped = m === "freehand" || (m === "mask" && editorMask);
+    if (shaped) {
       for (const c of [shapeCanvas, tintCanvas]) { c.width = canvas.width; c.height = canvas.height; }
       const sctx = shapeCanvas.getContext("2d");
       sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      paintShape(sctx, box, strokes);
+      if (m === "mask") paintEditorMask(sctx, box);
+      else paintStrokes(sctx, box, drag?.stroke ? [...data.strokes, drag.stroke] : data.strokes);
 
       // everything outside the shape gets the fill colour
-      const fill = FILL_CSS[W("fill_color")?.value] || "#ff0000";
+      const fill = FILL_CSS[W("fill_color")?.value] || FILL_CSS.yellow;
       const tctx = tintCanvas.getContext("2d");
       tctx.globalAlpha = 0.65;
       tctx.fillStyle = fill;
@@ -366,10 +410,26 @@ function setupEditor(node) {
       tctx.globalCompositeOperation = "destination-out";
       tctx.drawImage(shapeCanvas, 0, 0);
       tctx.globalCompositeOperation = "source-over";
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(tintCanvas, 0, 0);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+      // bounding box = what will be passed on; nothing painted = full image
+      const bb = drag ? null : shapeBounds(sctx, box, dpr);
+      if (bb || drag) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(tintCanvas, 0, 0);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      if (bb) {
+        ctx.strokeStyle = "#4af";
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
+        ctx.setLineDash([]);
+        const pw = Math.round((bb.w / box.w) * img.naturalWidth), ph = Math.round((bb.h / box.h) * img.naturalHeight);
+        label(ctx, `${pw}×${ph}`, bb.x + 4, bb.y + 4);
+      }
+    }
+
+    if (m === "freehand") {
       // the lasso outline while drawing
       if (drag?.stroke?.t === "lasso" && drag.stroke.p.length > 1) {
         const pts = drag.stroke.p;
@@ -382,22 +442,7 @@ function setupEditor(node) {
         ctx.stroke();
         ctx.setLineDash([]);
       }
-
-      // bounding box = what will be passed on
-      if (!drag && data.strokes.length) {
-        const bb = shapeBounds(sctx, box, dpr);
-        if (bb) {
-          ctx.strokeStyle = "#4af";
-          ctx.setLineDash([5, 4]);
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
-          ctx.setLineDash([]);
-          const pw = Math.round((bb.w / box.w) * img.naturalWidth), ph = Math.round((bb.h / box.h) * img.naturalHeight);
-          label(ctx, `${pw}×${ph}`, bb.x + 4, bb.y + 4);
-        }
-      }
-
-      if (hover && tool !== "lasso" && !(drag && drag.type !== "stroke")) {
+      if (hover && tool !== "lasso") {
         ctx.strokeStyle = tool === "erase" ? "#f66" : "#fff";
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -442,7 +487,7 @@ function setupEditor(node) {
   canvas.addEventListener("pointerdown", (e) => {
     const m = mode();
     const box = imageBox();
-    if (m === "none" || !box || e.button !== 0) return;
+    if ((m !== "rectangle" && m !== "freehand") || !box || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     canvas.setPointerCapture(e.pointerId);
@@ -520,12 +565,11 @@ function setupEditor(node) {
         if (st.s) st.s = Math.round(st.s * 1e4) / 1e4;
         data.strokes.push(st);
       }
-    } else if (data.rect && (data.rect[2] * img.naturalWidth < 2 || data.rect[3] * img.naturalHeight < 2)) {
+    } else if (data.rect && img && (data.rect[2] * img.naturalWidth < 2 || data.rect[3] * img.naturalHeight < 2)) {
       data.rect = drag.type === "se" && drag.rect[2] === 0 ? null : drag.rect;
     }
     drag = null;
     save();
-    lastDataValue = dataWidget.value;
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -556,13 +600,14 @@ function setupEditor(node) {
   hideDefaultPreview();
 
   // widget values change from many places (queue increment, workflow load,
-  // links); a cheap poll keeps the preview in sync with all of them
+  // MaskEditor, links); a cheap poll keeps the preview in sync with all of them
   let lastLook = "";
   const timer = setInterval(() => {
     if (!node.graph) return;
     hideDefaultPreview();
     const changed = syncFromWidget();
     refreshImage();
+    refreshMask();
     const look = `${mode()}|${W("fill_color")?.value}`;
     if (changed || look !== lastLook) {
       lastLook = look;
@@ -570,22 +615,9 @@ function setupEditor(node) {
     }
   }, 300);
 
-  // Workflows saved with v1 store the upload button's value ("image") right
-  // after upscale_method, where "source" sits now. Fall back to the defaults.
   const onConfigure = node.onConfigure;
   node.onConfigure = function () {
     const r = onConfigure?.apply(this, arguments);
-    const source = W("source");
-    if (source && !source.options?.values?.includes(source.value)) {
-      source.value = "single image";
-      for (const [name, value] of [["folder_path", ""], ["index", 0], ["end_of_folder", "wrap"],
-        ["crop_mode", "none"], ["fill_color", "red"], ["crop_data", ""]]) {
-        const w = W(name);
-        if (w) w.value = value;
-      }
-      const ctrl = W("index")?.linkedWidgets?.[0];
-      if (ctrl) ctrl.value = "increment";
-    }
     data = parseData(dataWidget.value);
     lastDataValue = dataWidget.value;
     return r;
@@ -594,7 +626,6 @@ function setupEditor(node) {
   const onRemoved = node.onRemoved;
   node.onRemoved = function () {
     clearInterval(timer);
-    if (img?.src?.startsWith("blob:")) URL.revokeObjectURL(img.src);
     return onRemoved?.apply(this, arguments);
   };
 
