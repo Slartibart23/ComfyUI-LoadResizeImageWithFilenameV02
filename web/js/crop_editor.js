@@ -571,6 +571,16 @@ function setupEditor(node) {
     drag = null;
     save();
   };
+  // Right-click on the preview opens the node menu (with "Open in MaskEditor"),
+  // just like on ComfyUI's own image preview, not the empty-canvas menu.
+  wrapper.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const lgCanvas = app.canvas;
+    lgCanvas.adjustMouseEvent?.(e);
+    lgCanvas.processContextMenu(node, e);
+  });
+
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
   canvas.addEventListener("pointerleave", () => { hover = null; if (!drag) draw(); });
