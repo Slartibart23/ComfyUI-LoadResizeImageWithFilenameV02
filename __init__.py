@@ -1,14 +1,10 @@
 """
 ComfyUI-LoadResizeImageWithFilename
 ====================================
-Two nodes for ComfyUI:
-
-Load & Resize Image + Filename
+A single-node extension for ComfyUI that combines:
   • Image loading with mask (alpha) extraction
   • Optional resize with proportion-keeping
   • STRING output for the loaded file's name (stem without extension)
-
-Load & Resize Image + Filename (Series/Crop) — everything above, plus
   • Folder series: one file per queued run, stops after the last file
   • Crop: rectangle / freehand shape drawn in the node, or the MaskEditor mask
 
@@ -23,12 +19,7 @@ from urllib.parse import quote
 from aiohttp import web
 from server import PromptServer
 
-from .nodes.load_resize_image_node import LoadAndResizeImageWithFilename
-from .nodes.load_resize_image_series_node import (
-    LoadAndResizeImageWithFilenameSeriesCrop,
-    EndOfSeries,
-    resolve_folder_image,
-)
+from .nodes.load_resize_image_node import LoadAndResizeImageWithFilename, EndOfSeries, resolve_folder_image
 
 
 @PromptServer.instance.routes.get("/lrif/folder_image")
@@ -55,12 +46,10 @@ async def lrif_folder_image(request):
 
 NODE_CLASS_MAPPINGS = {
     "LoadAndResizeImageWithFilename": LoadAndResizeImageWithFilename,
-    "LoadAndResizeImageWithFilenameSeriesCrop": LoadAndResizeImageWithFilenameSeriesCrop,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadAndResizeImageWithFilename": "Load & Resize Image + Filename",
-    "LoadAndResizeImageWithFilenameSeriesCrop": "Load & Resize Image + Filename (Series/Crop)",
 }
 
 WEB_DIRECTORY = "./web/js"

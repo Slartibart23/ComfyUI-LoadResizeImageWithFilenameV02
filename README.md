@@ -1,30 +1,32 @@
 # ComfyUI – Load & Resize Image + Filename
 
-**ComfyUI custom nodes** that extend the well-known
-[KJNodes `LoadAndResizeImage`](https://github.com/kijai/ComfyUI-KJNodes). The pack
-contains two nodes:
+A **ComfyUI custom node** that extends the well-known
+[KJNodes `LoadAndResizeImage`](https://github.com/kijai/ComfyUI-KJNodes) with:
 
-| Node | What it adds |
-|------|--------------|
-| **Load & Resize Image + Filename** | a **`filename` STRING output** so you can feed the loaded file's name directly into downstream nodes (e.g. save nodes, text nodes, prompt builders) |
-| **Load & Resize Image + Filename (Series/Crop)** | everything above, plus a **folder series** (every queued run loads the next image, stops after the last one) and **cropping**: a rectangle or freehand shape drawn in the node, or the mask painted in ComfyUI's MaskEditor |
+- a **`filename` STRING output** so you can feed the loaded file's name
+  directly into downstream nodes (e.g. save nodes, text nodes, prompt builders)
+- a **folder series**: every queued run loads the next image, stops after the last one
+- **cropping**: a rectangle or freehand shape drawn in the node, or the mask
+  painted in ComfyUI's MaskEditor (right-click → *Open in MaskEditor*)
 
-The first node is unchanged from version 1, so existing workflows keep working.
-Both nodes support ComfyUI's MaskEditor (right-click → *Open in MaskEditor*).
+Workflows saved with version 1 keep working: their settings are kept and the
+new inputs start with defaults that behave like version 1.
 
 ---
 
-## Load & Resize Image + Filename
+## Outputs
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `image` | `IMAGE` | Loaded image as a float32 tensor (B, H, W, 3) |
-| `mask` | `MASK` | Alpha channel extracted as a (B, H, W) mask tensor |
-| `width` | `INT` | Final image width (after optional resize) |
-| `height` | `INT` | Final image height (after optional resize) |
+| `image` | `IMAGE` | Loaded (and optionally cropped / resized) image as a float32 tensor (B, H, W, 3) |
+| `mask` | `MASK` | Alpha channel as a (B, H, W) mask tensor; with `freehand` / `mask` cropping the shape (1 = selected) |
+| `width` | `INT` | Final image width (after crop and optional resize) |
+| `height` | `INT` | Final image height (after crop and optional resize) |
 | `filename` | `STRING` | File stem without extension (e.g. `my_photo`) |
+| `index` | `INT` | Position of the loaded file in the folder (0 in single image mode) |
+| `file_count` | `INT` | Number of images in the folder (1 in single image mode) |
 
-**Inputs:**
+## Inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
@@ -33,31 +35,17 @@ Both nodes support ComfyUI's MaskEditor (right-click → *Open in MaskEditor*).
 | `width` | `512` | Target width |
 | `height` | `512` | Target height |
 | `keep_proportion` | `False` | Scale uniformly to fit within width × height |
-| `divisible_by` | `2` | Round output dimensions to a multiple of this value |
+| `divisible_by` | `32` | Round output dimensions to a multiple of this value |
 | `upscale_method` | `lanczos` | Interpolation: nearest-exact / bilinear / area / bicubic / lanczos |
-
----
-
-## Load & Resize Image + Filename (Series/Crop)
-
-Same inputs and outputs as above, plus:
-
-| Input | Default | Description |
-|-------|---------|-------------|
 | `source` | `single image` | `single image` = the file picked in `image`, `folder` = the file at `index` in `folder_path` |
 | `folder_path` | — | Folder with the image series (can also be connected as an input) |
 | `index` | `0` | Position in the folder, 0 = first file. *control after generate* is set to `increment` |
 | `crop_mode` | `none` | `none`, `rectangle`, `freehand` or `mask` (see below) |
 | `fill_color` | `yellow` | Colour outside the shape for `freehand` / `mask`: yellow / red / green / blue / white / black |
 
-| Extra output | Type | Description |
-|--------------|------|-------------|
-| `index` | `INT` | Position of the loaded file in the folder (0 in single image mode) |
-| `file_count` | `INT` | Number of images in the folder (1 in single image mode) |
+---
 
-In freehand and mask mode the `mask` output contains the shape (1 = selected).
-
-### Folder series
+## Folder series
 
 1. Set `source` to `folder` and enter `folder_path` (e.g. `D:\photos\batch01`).
 2. Set `index` to `0`.
@@ -74,7 +62,9 @@ The series **never repeats**: the first run after the last file stops with
 from the queue (other queued work is left alone). Set `index` back to `0` to
 start again.
 
-### Cropping
+---
+
+## Cropping
 
 The node shows the image that will be loaded. The crop is applied **before** the
 optional resize, so `width`/`height` refer to the cropped image when resize is off.
